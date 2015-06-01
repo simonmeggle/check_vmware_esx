@@ -68,7 +68,7 @@ First install the VMware Perl SDK.
 ----------------------------------
 
 - Download the SDK from vmware.
-  - Go to [www.vmware.com](www.vmware.com) -> Downloads -> "All downloads,drivers & tools""
+  - Go to www.vmware.com->Downloads->All downloads,drivers & tools
   - Search for "Perl SDK"
   - Download the appropriate Perl SDK for your release (the SDK is free but you have to register yourself for this).
   - Install it. (Installation guide can be found here: http://www.vmware.com/support/developer/viperltoolkit/)
@@ -116,6 +116,28 @@ define command{
 	}
 
 
+Compatibility with Plugin Developer Guidelines
+==============================================
+
+According to the guidelines every plugin should start it's output with 
+
+   SERVICE STATUS: First line of output | First part of performance data
+
+The service status part wasn't implemented in output in the past because from a technically view it is not necessary.
+For notifications this string is available as a macro ($SERVICESTATE$) together with the state ID ($SERVICESTATEID$).
+If the macro is used for notifications you will have a doubled string (for example CRITICAL CRITICAL). While this is only
+cosmetics for email and in the webgui (if a check is red you need the extra string CRITICAL only when you are
+clour-blind) it can have side effects using SMS because the string length in SMS is limited. So you have to filter
+the message (sed) before you send it.
+
+To fulfill the rules of the Plugin Developer Guidelines an extra option --statelabels=<y/n> was added. The default is
+set in the plugin in the variable $statelabels_def which is set to "y" by default. 
+
+Simon Meggle proposed --nostatelabels (thanks Simon - it was a good idea to add it) but I preferred it the other way
+round first. Caused by some feedback I decided to offer all options. If you don't like statelabels (like me) just set
+the variable to "n".
+
+
 Using a sessionfile
 ===================
 
@@ -139,7 +161,7 @@ plugin run. A newly started check looks for the lock file and waits until it is 
 hang forever due to the alarm routine. Therefore the default for the timeout is enhenced to 40 secs. instead of 30 secs..
 
 Example command and service check definition:
-----------------------------------------------
+---------------------------------------------
 
 define command{
        command_name    check_vsphere_health

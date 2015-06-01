@@ -1180,6 +1180,40 @@
 # - 27 Dec 2015 M.Fuerstenau version 0.9.22a
 #   - Bugfix:
 #     - Instead of mapping 1 to 0 with --ignore_warning 2 was mapped to 0. Corrected.
+#
+# - 31 May 2015 M.Fuerstenau version 0.9.23
+#   - check_vmware_esx.pl:
+#     - New option --statelabel to have the label OK, CRITICAL etc. in plugin output to
+#       fulfill the rules of the plugin developer guidelines. This was proposed by Simon Meggle.
+#       See Readme.
+#     - Added test for session file directory. Thanks Simon.
+#     - Replaced variable $plugin_cache with $sessionfile_dir_def. $plugin_cache was copied from
+#       another plugin of me. But this plugin doesn't  store any data. it was only used to store the 
+#       session files (and session file lock files) and therefore the name was misleading.
+#   - host_storage_info()
+#     - Bugfix: Fixed bug in host storage adapter whitelisting.(Simon Meggle)
+#     - Bugfix: Elements not matching the whitelist were not counted as ignored.(Simon Meggle)
+#   - host_net_info()
+#     - Bugfix: Fixed missing semicolon between some perf values and warning threshold.(Simon Meggle)
+#   - host_runtime_info()
+#     - Bugfix: Elements not matching the whitelist were not counted as ignored.(Simon Meggle)
+#     - Raise a message after first host runtime issue. Changed state for that check to warning.(Simon Meggle)
+#   - dc_runtime_info.pm
+#     - Bugfix: Elements not matching the whitelist were not counted as ignored.(Simon Meggle)
+#     - New option --showall. Without this only the tool status of machines with problems is listed.
+#     -  Bugfix: "Installed,running,supported and newer than the version available on the host." was set
+#        to warning but this is quit ok.
+#      - In case of a complete runtime check the output is shorted. 
+#   - vm_net_info()
+#     - Bugfix: Fixed missing semicolon between some perf values and warning threshold.(Simon Meggle)
+#
+# - 31 May 2015 M.Fuerstenau version 0.9.24
+#   - check_vmware_esx.pl:
+#     - Option --statelabels changed from a switch to handing over a value (y or n). This was done as mentioned 
+#       earlier to fulfill to have the label OK, CRITICAL etc. in plugin output to
+#       fulfill the rules of the plugin developer guidelines. This was proposed by Simon Meggle.
+#       See Readme.
+#     - Bugfix: Wrong output for --statelabels from the help.
 
 use strict;
 use warnings;
@@ -1221,7 +1255,7 @@ $SIG{TERM} = 'catch_intterm';
 
 # General stuff
 our $version;                                  # Only for showing the version
-our $prog_version = '0.9.22';                  # Contains the program version number
+our $prog_version = '0.9.24';                  # Contains the program version number
 our $ProgName = basename($0);
 
 my  $PID = $$;                                 # Stores the process identifier of the actual run. This will be
@@ -1281,8 +1315,9 @@ my  $thresholds_given = 0;                     # During checking the threshold i
                                         
 our $spaceleft;                                # This is used for datastore volumes. When checking multiple volumes
                                                # the threshol must be given in either percent or space left on device.
-my  $plugin_cache="/var/";                     # Directory for caching plugin data. Good idea to use a tmpfs
-                                               # because it speeds up operation. Override with --plugincachedir 
+my  $sessionfile_dir_def="/tmp/";              # Directory for caching the session files and sessionfile lock files
+                                               # Good idea to use a tmpfs because it speeds up operation    
+
 our $listsensors;                              # This flag set in conjunction with -l runtime -s health or -s sensors
                                                # will list all sensors
 our $usedspace;                                # Show used spaced instead of free
@@ -1318,15 +1353,24 @@ my  $multiline_def="\n";                       # Default for $multiline;
 
 our $vm_tools_poweredon_only;                  # Used with Vcenter runtime check to list only powered on VMs when
                                                # checking the tools
+our $showall;                                  # Shows all where used
+                                               # checking the tools
 our $ignoreunknown;                            # Maps unknown to ok
 our $ignorewarning;                            # Maps warning to ok
 our $standbyok;                                # For multipathing if a standby multipath is ok
 our $listall;                                  # used for host. Lists all available devices(use for listing purpose only)
 our $nostoragestatus;                          # To avoid a double alarm when also doing a check with -S runtime -s health
                                                # and -S runtime -s storagehealth for the same host.
-our $nostatelabels;                            # If set, service output does not contain the uppercase service state string.
-our $plugincachedir;                           # Override $plugin_cache
- 
+
+my $statelabels_def="y";                       # Default value for state labels in plugin output as described in the
+                                               # Nagios Plugin Developer Guidelines. In my opinion this values don't make
+                                               # sense but to to be compatible.... . It can be overwritten via commandline.
+                                               # If you prefer no state labels (as it was default in earlier versions)
+                                               # set this default to "n".
+my $statelabels;                               # To overwrite $statelabels_def via commandline.
+
+
+
 my  $trace;
 
 
@@ -1380,12 +1424,12 @@ GetOptions
                                          "isregexp"         => \$isregexp,
                                          "listall"          => \$listall,
                                          "poweredonly"      => \$vm_tools_poweredon_only,
+                                         "showall"          => \$showall,
                                          "standbyok"        => \$standbyok,
                                          "sslport=s"        => \$sslport,
                                          "gigabyte"         => \$gigabyte,
                                          "nostoragestatus"  => \$nostoragestatus,
-                                         "nostatelabels"    => \$nostatelabels,
-                                         "plugincachedir"   => \$plugincachedir,
+                                         "statelabels"      => \$statelabels,
                                          "spaceleft"        => \$spaceleft,
 	 "V"   => \$version,             "version"          => \$version);
 
@@ -1411,28 +1455,6 @@ if (defined($blacklist) && defined($whitelist))
    print "Error: -B|--exclude and -W|--include should not be used together.\n\n";
    print_help($help);
    exit 1;
-   }
-
-# Set default best location for plugin_cache in this environment
-if ( $ENV{OMD_ROOT}) 
-   {
-   $plugin_cache = $ENV{OMD_ROOT} . "/var/check_vmware_esx/";
-   if ( ! -d $plugin_cache ) 
-      {
-      unless (mkdir $plugin_cache) 
-         {
-         die(sprintf "UNKNOWN: Unable to create plugin_cache directory %s.", $plugin_cache);
-         }
-      } 
-   }
-# as cmdline parameter take it as it is
-if ( $plugincachedir ) 
-   {
-   $plugin_cache = $plugincachedir; 
-   }
-unless (-d $plugin_cache) 
-   {
-   die(sprintf "UNKNOWN: plugin_cache directory %s does not exist.", $plugin_cache);
    }
 
 # Multiline output in GUI overview?
@@ -1652,6 +1674,19 @@ if (!defined($nosession))
       }
       
    
+   # Set default best location for sessionfile_dir_def in this environment
+   if ( $ENV{OMD_ROOT}) 
+      {
+      $sessionfile_dir_def = $ENV{OMD_ROOT} . "/var/check_vmware_esx/";
+      if ( ! -d $sessionfile_dir_def ) 
+         {
+         unless (mkdir $sessionfile_dir_def) 
+            {
+            die(sprintf "UNKNOWN: Unable to create sessionfile_dir_def directory %s.", $sessionfile_dir_def);
+            }
+         } 
+      }
+
    if (defined($sessionfile_dir))
       {
       # If path contains trailing slash remove it
@@ -1660,9 +1695,14 @@ if (!defined($nosession))
       }
    else
       {
-      $sessionfile_name = $plugin_cache . $sessionfile_name;
+      $sessionfile_name = $sessionfile_dir_def . $sessionfile_name;
       }
    
+   unless (-d $sessionfile_dir_def) 
+          {
+          die(sprintf "UNKNOWN: sessionfile_dir_def directory %s does not exist.", $sessionfile_dir_def);
+          }
+
    $sessionlockfile = $sessionfile_name . "_locked";
    
    if ( -e $sessionfile_name )
@@ -1805,23 +1845,118 @@ if (defined($ignorewarning))
 $perfdata =~ s/^$perfdata_init//;
 $perfdata =~ s/^[ \t]*//;
 
-my $statelabel = ""; 
-unless ($nostatelabels) 
+# $statelabels set or using default?
+if (defined($statelabels))
    {
-   $statelabel = uc($status2text{$result}) . ": ";
+   # This eliminates typos like Y or yes or nO etc.
+   if ($statelabels =~ m/^y.*$/i)
+      {
+      $statelabels = "y";
+      }
+   else
+      {
+      if ($statelabels =~ m/^n.*$/i)
+         {
+         $statelabels = "n";
+         }
+      else
+         {
+         print "Wrong value for --statelabels. Must be y or no and not $statelabels\n";
+         exit 2;
+         }
+      }
+   }
+else
+   {
+   $statelabels = $statelabels_def;
+   }
+   
+   
+if ( $result == 0 )
+   {
+   if ($statelabels eq "y")
+      {
+      print "OK: $output";
+      }
+   else
+      {
+      print "$output";
+      }
+
+   if ($perfdata)
+      {
+      print "|$perfdata\n";
+      }
+      else
+      {
+      print "\n";
+      }
    }
 
 # Remove the last multiline regardless whether it is \n or <br>
 $output =~ s/$multiline$//;
 
-printf "%s%s", $statelabel, $output;
-if ($perfdata)
+if ( $result == 1 )
    {
-   print "|$perfdata\n";
-   }
+   if ($statelabels eq "y")
+      {
+      print "WARNING: $output";
+      }
    else
+      {
+      print "$output";
+      }
+
+   if ($perfdata)
+      {
+      print "|$perfdata\n";
+      }
+   else
+      {
+      print "\n";
+      }
+   }
+
+if ( $result == 2 )
    {
-   print "\n";
+   if ($statelabels eq "y")
+      {
+      print "CRITICAL: $output";
+      }
+   else
+      {
+      print "$output";
+      }
+
+   if ($perfdata)
+      {
+      print "|$perfdata\n";
+      }
+   else
+      {
+      print "\n";
+      }
+   }
+
+if ( $result == 3 )
+   {
+   if ($statelabels eq "y")
+      {
+      print "UNKNOWN: $output";
+      }
+   else
+      {
+      print "$output";
+      }
+
+   if ($perfdata)
+      {
+      print "|$perfdata\n";
+      }
+   else
+      {
+      print "\n";
+      }
    }
 
 exit $result;
